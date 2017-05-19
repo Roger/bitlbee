@@ -1174,13 +1174,66 @@ void prplcb_conv_del_users(PurpleConversation *conv, GList *cbuddies)
 	}
 }
 
+/* Store images and replace <img> tags with urls pointing to them */
+static gboolean
+replace_images_cb (const GMatchInfo *info, GString *res, gpointer data)
+{
+	gchar *id;
+	const gchar *ext;
+	guchar *imgdata;
+	size_t imglen;
+	gchar *hash;
+	gchar *path;
+
+	if (global.conf->web_directory == NULL || global.conf->web_url == NULL) {
+		goto error;
+	}
+
+	id = g_match_info_fetch(info, 1);
+	PurpleStoredImage *image = purple_imgstore_find_by_id(atoi(id));
+
+	if (!image) {
+		goto error;
+	}
+
+	ext = purple_imgstore_get_extension(image);
+	imgdata = (guchar *) purple_imgstore_get_data(image);
+	imglen = purple_imgstore_get_size(image);
+
+	hash = g_compute_checksum_for_data(G_CHECKSUM_SHA256, imgdata, imglen);
+	path = g_strdup_printf("%s/%s.%s", global.conf->web_directory, hash, ext);
+
+	// only save images that don't exist in the filesystem, in protocols like telegram lots of images are duplicated(stickers)
+	if (access(path, F_OK) == -1) {
+		g_file_set_contents(path, (gchar *) imgdata, imglen, NULL);
+	}
+
+	g_string_append_printf(res, "%s/%s.%s", global.conf->web_url, hash, ext);
+
+	g_free(id);
+	g_free(path);
+	return FALSE;
+
+error:
+	g_string_append(res, "[image]");
+	return FALSE;
+}
+
+
 /* Generic handler for IM or chat messages, covers write_chat, write_im and write_conv */
 static void handle_conv_msg(PurpleConversation *conv, const char *who, const char *message_, guint32 bee_flags, time_t mtime)
 {
 	struct im_connection *ic = purple_ic_by_pa(conv->account);
 	struct groupchat *gc = conv->ui_data;
-	char *message = g_strdup(message_);
 	PurpleBuddy *buddy;
+	static GRegex *regex = NULL;
+	gchar *message;
+
+	if (regex == NULL) {
+		regex = g_regex_new("<img id=\"(\\d+)\">", 0, 0, NULL);
+	}
+
+	message = g_regex_replace_eval(regex, message_, -1, 0, 0, replace_images_cb, NULL, NULL);
 
 	buddy = purple_find_buddy(conv->account, who);
 	if (buddy != NULL) {
@@ -1210,8 +1263,7 @@ static void prplcb_conv_msg(PurpleConversation *conv, const char *who, const cha
 
 /* Handles write_conv. Only passes self messages from other locations through.
  * That is, only writes of PURPLE_MESSAGE_SEND.
- * There are more events which might be handled in the future, but some are tricky.
- * (images look like <img id="123">, what do i do with that?) */
+ * There are more events which might be handled in the future, but some are tricky. */
 static void prplcb_conv_write(PurpleConversation *conv, const char *who, const char *alias, const char *message,
                               PurpleMessageFlags flags, time_t mtime)
 {
