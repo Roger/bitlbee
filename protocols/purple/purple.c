@@ -1212,6 +1212,7 @@ replace_images_cb (const GMatchInfo *info, GString *res, gpointer data)
 
 	g_free(id);
 	g_free(path);
+	purple_imgstore_unref(image);
 	return FALSE;
 
 error:
