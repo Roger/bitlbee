@@ -1174,50 +1174,71 @@ void prplcb_conv_del_users(PurpleConversation *conv, GList *cbuddies)
 	}
 }
 
-/* Store images and replace <img> tags with urls pointing to them */
-static gboolean
-replace_images_cb (const GMatchInfo *info, GString *res, gpointer data)
+char *replace_images (const char *message_)
 {
-	gchar *id;
 	const gchar *ext;
 	guchar *imgdata;
 	size_t imglen;
-	gchar *hash;
-	gchar *path;
+	gchar *hash = NULL;
+	gchar *path = NULL;
+	PurpleStoredImage *image;
 
-	if (global.conf->web_directory == NULL || global.conf->web_url == NULL) {
-		goto error;
+	char *message;
+	char *web_url = global.conf->web_url;
+	char *web_directory = global.conf->web_directory;
+	gint pos = 0;
+	const char *start, *end = NULL, *last;
+	GData *attribs;
+	last = message_;
+
+	if(purple_markup_find_tag("img", last, &start, &end, &attribs)) {
+		const char *id;
+		GString *string_buffer = g_string_new(NULL);
+		do {
+			/* Add text before the image */
+			if(start - last) {
+				pos = pos + g_utf8_strlen(last, start - last);
+				g_string_append_len(string_buffer, last, start - last);
+			}
+
+			if((id = g_datalist_get_data(&attribs, "id")) && (image = purple_imgstore_find_by_id(atoi(id))) && web_url != NULL && web_directory != NULL) {
+				ext = purple_imgstore_get_extension(image);
+				imgdata = (guchar *) purple_imgstore_get_data(image);
+				imglen = purple_imgstore_get_size(image);
+
+				hash = g_compute_checksum_for_data(G_CHECKSUM_SHA256, imgdata, imglen);
+				path = g_strdup_printf("%s/%s.%s", web_directory, hash, ext);
+
+				// only save images that don't exist in the filesystem, in protocols like telegram lots of images are duplicated(stickers)
+				if (!g_file_test(path, G_FILE_TEST_EXISTS)) {
+					g_file_set_contents(path, (gchar *) imgdata, imglen, NULL);
+				}
+
+				g_string_append_printf(string_buffer, "%s/%s.%s", web_url, hash, ext);
+
+				purple_imgstore_unref(image);
+			} else {
+				g_string_append(string_buffer, "[image]");
+			}
+
+			last = end + 1;
+			g_datalist_clear(&attribs);
+
+		} while(purple_markup_find_tag("img", last, &start, &end, &attribs));
+
+		/* Add text after the images */
+		if(last && *last) {
+			pos = pos + g_utf8_strlen(last, -1);
+			g_string_append(string_buffer, last);
+		}
+		message = g_string_free(string_buffer, FALSE);
+
+		g_free(path);
+		g_free(hash);
+	} else {
+		message = g_strdup(message_);
 	}
-
-	id = g_match_info_fetch(info, 1);
-	PurpleStoredImage *image = purple_imgstore_find_by_id(atoi(id));
-
-	if (!image) {
-		goto error;
-	}
-
-	ext = purple_imgstore_get_extension(image);
-	imgdata = (guchar *) purple_imgstore_get_data(image);
-	imglen = purple_imgstore_get_size(image);
-
-	hash = g_compute_checksum_for_data(G_CHECKSUM_SHA256, imgdata, imglen);
-	path = g_strdup_printf("%s/%s.%s", global.conf->web_directory, hash, ext);
-
-	// only save images that don't exist in the filesystem, in protocols like telegram lots of images are duplicated(stickers)
-	if (access(path, F_OK) == -1) {
-		g_file_set_contents(path, (gchar *) imgdata, imglen, NULL);
-	}
-
-	g_string_append_printf(res, "%s/%s.%s", global.conf->web_url, hash, ext);
-
-	g_free(id);
-	g_free(path);
-	purple_imgstore_unref(image);
-	return FALSE;
-
-error:
-	g_string_append(res, "[image]");
-	return FALSE;
+	return message;
 }
 
 
@@ -1234,7 +1255,7 @@ static void handle_conv_msg(PurpleConversation *conv, const char *who, const cha
 		regex = g_regex_new("<img id=\"(\\d+)\">", 0, 0, NULL);
 	}
 
-	message = g_regex_replace_eval(regex, message_, -1, 0, 0, replace_images_cb, NULL, NULL);
+	message = replace_images(message_);
 
 	buddy = purple_find_buddy(conv->account, who);
 	if (buddy != NULL) {
